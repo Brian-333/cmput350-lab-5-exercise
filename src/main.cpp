@@ -46,6 +46,36 @@ float animation_time = 0.0f;
 // TODO: (Part 3) Track the index of the control point being dragged.
 int dragged_control_point_index = -1;
 
+// Each cubic segment uses 4 points; consecutive segments share the endpoint
+// (indices 0..3, 3..6, 6..9, ...). Number of points = 3 * segments + 1.
+int getNumberOfSegments() {
+    return static_cast<int>((control_points.size() - 1) / 3);
+}
+
+std::vector<Point2D> getSegmentPoints(int segment) {
+    const size_t start = static_cast<size_t>(segment) * 3;
+    return {control_points[start], control_points[start + 1],
+            control_points[start + 2], control_points[start + 3]};
+}
+
+// Map global t in [0, 1] across all segments to a local cubic segment + local t.
+void globalTToSegment(float t, int& segment, float& local_t) {
+    const int segments = getNumberOfSegments();
+    if (segments <= 1) {
+        segment = 0;
+        local_t = t;
+        return;
+    }
+    float scaled = t * static_cast<float>(segments);
+    segment = static_cast<int>(scaled);
+    if (segment >= segments) {
+        segment = segments - 1;
+        local_t = 1.0f;
+    } else {
+        local_t = scaled - static_cast<float>(segment);
+    }
+}
+
 void handleInput(sf::Window& window, bool& shouldQuit) {
     while (const std::optional<sf::Event> event = window.pollEvent()) {
         if (event->is<sf::Event::Closed>()) {
@@ -72,21 +102,55 @@ void handleInput(sf::Window& window, bool& shouldQuit) {
             // When moving point 3, move point 5 without changing its distance
             // from point 4 (point numbers here start at 1).
             if (dragged_control_point_index != -1) {
-                control_points[dragged_control_point_index] = static_cast<Point2D>(mouse->position);
+                const int idx = dragged_control_point_index;
+                const Point2D new_pos = static_cast<Point2D>(mouse->position);
+
+                if (idx % 3 == 2 && idx + 2 < static_cast<int>(control_points.size())) {
+                    // Dragging incoming handle (e.g. P2): mirror against joint P3 onto P4.
+                    control_points[idx] = new_pos;
+                    const Point2D& joint = control_points[idx + 1];
+                    Point2D opposite = control_points[idx + 2] - joint;
+                    float dist = std::sqrt(opposite.x * opposite.x + opposite.y * opposite.y);
+                    Point2D dir = joint - control_points[idx];
+                    float len = std::sqrt(dir.x * dir.x + dir.y * dir.y);
+                    if (len > 0.0f) {
+                        dir = dir / len;
+                        control_points[idx + 2] = joint + dir * dist;
+                    }
+                } else if (idx % 3 == 1 && idx >= 4) {
+                    // Dragging outgoing handle (e.g. P4): mirror against joint P3 onto P2.
+                    control_points[idx] = new_pos;
+                    const Point2D& joint = control_points[idx - 1];
+                    Point2D opposite = control_points[idx - 2] - joint;
+                    float dist = std::sqrt(opposite.x * opposite.x + opposite.y * opposite.y);
+                    Point2D dir = joint - control_points[idx];
+                    float len = std::sqrt(dir.x * dir.x + dir.y * dir.y);
+                    if (len > 0.0f) {
+                        dir = dir / len;
+                        control_points[idx - 2] = joint + dir * dist;
+                    }
+                } else if (idx % 3 == 0 && idx > 0 && idx + 1 < static_cast<int>(control_points.size())) {
+                    // Dragging a shared joint: translate both adjacent handles with it.
+                    Point2D delta = new_pos - control_points[idx];
+                    control_points[idx] = new_pos;
+                    control_points[idx - 1] += delta;
+                    control_points[idx + 1] += delta;
+                } else {
+                    control_points[idx] = new_pos;
+                }
                 return;
             }
         } else if (const auto* key = event->getIf<sf::Event::KeyPressed>()) {
             // TODO: (Part 4) '+' adds three control points; '-' removes three,
             // keeping at least four points.
             if (key->code == sf::Keyboard::Key::Equal || key->code == sf::Keyboard::Key::Add) {
-                // Add 1 point based on previous 2 points
+                // Add 1 point based on previous 2 points (C1 continuity at join)
                 static Point2D tmp;
                 tmp = control_points[control_points.size() - 1] - control_points[control_points.size() - 2];
                 control_points.push_back(control_points[control_points.size() - 1] + tmp);
                 // Add 2 more random points
                 control_points.push_back(Point2D(rand() % WINDOW_WIDTH, rand() % WINDOW_HEIGHT));
                 control_points.push_back(Point2D(rand() % WINDOW_WIDTH, rand() % WINDOW_HEIGHT));
-                
             } else if (key->code == sf::Keyboard::Key::Hyphen || key->code == sf::Keyboard::Key::Subtract) {
                 if (control_points.size() > 4) {
                     control_points.pop_back();
@@ -103,12 +167,22 @@ void render(sf::RenderWindow& window) {
     // ====== ====== ======
     // TODO: (Part 1) Sample GetPoint over t in [0, 1] and connect samples using the line-drawing
     // code from your project. Draw all four control points as circles after drawing the curve.
+    // TODO: (Part 4) Draw all connected cubic Bezier segments and their handles.
     // ====== ====== ======
-    // Sample the curve
-    sf::VertexArray graph(sf::PrimitiveType::LineStrip, MAX_SAMPLE_POINTS);
-    for (size_t i = 0; i < MAX_SAMPLE_POINTS; i++) {
-        graph[i].position = getPoint(control_points, i / static_cast<float>(MAX_SAMPLE_POINTS));
-        graph[i].color = sf::Color::Yellow;
+    const int segments = getNumberOfSegments();
+    const size_t samples_per_segment = MAX_SAMPLE_POINTS;
+    sf::VertexArray graph(sf::PrimitiveType::LineStrip, samples_per_segment * segments - (segments - 1));
+    size_t vertex = 0;
+    for (int s = 0; s < segments; s++) {
+        std::vector<Point2D> seg = getSegmentPoints(s);
+        // Skip first sample of later segments (shared with previous segment end).
+        size_t start_i = (s == 0) ? 0 : 1;
+        for (size_t i = start_i; i < samples_per_segment; i++) {
+            float t = i / static_cast<float>(samples_per_segment - 1);
+            graph[vertex].position = getPoint(seg, t);
+            graph[vertex].color = sf::Color::Yellow;
+            vertex++;
+        }
     }
     window.draw(graph);
 
@@ -126,42 +200,37 @@ void render(sf::RenderWindow& window) {
     // ====== ====== ======
     static sf::RectangleShape square(sf::Vector2f(10, 10));
     static float direction = 1;
+    int segment = 0;
+    float local_t = 0.0f;
+    globalTToSegment(animation_time, segment, local_t);
+    std::vector<Point2D> active_seg = getSegmentPoints(segment);
     square.setOrigin({square.getSize().x / 2, square.getSize().y / 2});
-    square.setPosition(getPoint(control_points, animation_time));
-    Point2D slope = getSlope(control_points, animation_time);
+    square.setPosition(getPoint(active_seg, local_t));
+    Point2D slope = getSlope(active_seg, local_t);
     square.setRotation(sf::radians(std::atan2(slope.y, slope.x)));
     square.setFillColor(sf::Color::Red);
     window.draw(square);
-    animation_time += direction / static_cast<float>(MAX_SAMPLE_POINTS);
+    animation_time += direction / static_cast<float>(MAX_SAMPLE_POINTS * segments);
     if (animation_time >= 1.0f || animation_time <= 0.0f) {
         direction *= -1;
+        animation_time = std::max(0.0f, std::min(1.0f, animation_time));
     }
 
     // ====== ====== ======
     // TODO: (Part 3) Draw control handles from point 1 to 2 and point 3 to 4.
     // TODO: (Part 4) Draw all connected cubic Bezier segments and their handles.
     // ====== ====== ======
-    // Draw middle lines
-    if (control_points.size() > 4) {
-        for (size_t i = 2; i < control_points.size() - 3; i += 3) {
-            static sf::Vertex line[2];
-            static sf::Vertex line2[2];
-            line[0].position = control_points[i];
-            line[1].position = control_points[i + 1];
-            line2[0].position = control_points[i + 1];
-            line2[1].position = control_points[i + 2];
-            window.draw(line, 2, sf::PrimitiveType::Lines);
-            window.draw(line2, 2, sf::PrimitiveType::Lines);
-        }
+    for (int s = 0; s < segments; s++) {
+        const size_t start = static_cast<size_t>(s) * 3;
+        static sf::Vertex line[2];
+        line[0].position = control_points[start];
+        line[1].position = control_points[start + 1];
+        line[0].color = line[1].color = sf::Color::White;
+        window.draw(line, 2, sf::PrimitiveType::Lines);
+        line[0].position = control_points[start + 2];
+        line[1].position = control_points[start + 3];
+        window.draw(line, 2, sf::PrimitiveType::Lines);
     }
-    // Draw start and end lines
-    static sf::Vertex line[2];
-    line[0].position = control_points[0];
-    line[1].position = control_points[1];
-    window.draw(line, 2, sf::PrimitiveType::Lines);
-    line[0].position = control_points[control_points.size() - 2];
-    line[1].position = control_points[control_points.size() - 1];
-    window.draw(line, 2, sf::PrimitiveType::Lines);
 
     // ====== ====== ======
     // TODO: (Bonus) Support multiple curves, a Galaga screen overlay at a 1:2 ratio, and exporting
