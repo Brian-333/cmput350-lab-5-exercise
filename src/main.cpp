@@ -79,10 +79,20 @@ void handleInput(sf::Window& window, bool& shouldQuit) {
             // TODO: (Part 4) '+' adds three control points; '-' removes three,
             // keeping at least four points.
             if (key->code == sf::Keyboard::Key::Equal || key->code == sf::Keyboard::Key::Add) {
-                
+                // Add 1 point based on previous 2 points
+                static Point2D tmp;
+                tmp = control_points[control_points.size() - 1] - control_points[control_points.size() - 2];
+                control_points.push_back(control_points[control_points.size() - 1] + tmp);
+                // Add 2 more random points
+                control_points.push_back(Point2D(rand() % WINDOW_WIDTH, rand() % WINDOW_HEIGHT));
+                control_points.push_back(Point2D(rand() % WINDOW_WIDTH, rand() % WINDOW_HEIGHT));
                 
             } else if (key->code == sf::Keyboard::Key::Hyphen || key->code == sf::Keyboard::Key::Subtract) {
-                
+                if (control_points.size() > 4) {
+                    control_points.pop_back();
+                    control_points.pop_back();
+                    control_points.pop_back();
+                }
             }
         }
     }
@@ -131,12 +141,27 @@ void render(sf::RenderWindow& window) {
     // TODO: (Part 3) Draw control handles from point 1 to 2 and point 3 to 4.
     // TODO: (Part 4) Draw all connected cubic Bezier segments and their handles.
     // ====== ====== ======
-    for (size_t i = 0; i < control_points.size() - 1; i += 2) {
-        static sf::Vertex line[2];
-        line[0].position = control_points[i];
-        line[1].position = control_points[i + 1];
-        window.draw(line, 2, sf::PrimitiveType::Lines);
+    // Draw middle lines
+    if (control_points.size() > 4) {
+        for (size_t i = 2; i < control_points.size() - 3; i += 3) {
+            static sf::Vertex line[2];
+            static sf::Vertex line2[2];
+            line[0].position = control_points[i];
+            line[1].position = control_points[i + 1];
+            line2[0].position = control_points[i + 1];
+            line2[1].position = control_points[i + 2];
+            window.draw(line, 2, sf::PrimitiveType::Lines);
+            window.draw(line2, 2, sf::PrimitiveType::Lines);
+        }
     }
+    // Draw start and end lines
+    static sf::Vertex line[2];
+    line[0].position = control_points[0];
+    line[1].position = control_points[1];
+    window.draw(line, 2, sf::PrimitiveType::Lines);
+    line[0].position = control_points[control_points.size() - 2];
+    line[1].position = control_points[control_points.size() - 1];
+    window.draw(line, 2, sf::PrimitiveType::Lines);
 
     // ====== ====== ======
     // TODO: (Bonus) Support multiple curves, a Galaga screen overlay at a 1:2 ratio, and exporting
